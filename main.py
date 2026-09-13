@@ -33,7 +33,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 
 # ID admin: có thể điền ID CỦA USER (tài khoản Discord) hoặc ID CỦA ROLE, bot tự nhận diện được cả 2.
 # Muốn thêm nhiều admin thì thêm nhiều ID vào trong dấu {}, cách nhau bằng dấu phẩy.
-ADMIN_IDS = {1548281829432365056}
+ADMIN_IDS = {1548281829432365056, 987654321098765432}
 
 # ID category để chứa các kênh ticket (để trống None nếu không cần category riêng)
 TICKET_CATEGORY_ID = None  # vd: 123456789012345678
@@ -41,11 +41,11 @@ TICKET_CATEGORY_ID = None  # vd: 123456789012345678
 AUTO_DELETE_SECONDS = 5 * 60  # 5 phút
 
 # ID role sẽ được gán cho user sau khi bấm nút xác minh (chuột phải role -> Copy ID)
-VERIFY_ROLE_ID = 123456789012345678  # <-- đổi thành ID role "Member đã xác minh" của bạn
+VERIFY_ROLE_ID = 1548281835283292242    # <-- đổi thành ID role "Member đã xác minh" của bạn
 
 # ID role tự động gán cho user MỚI VÀO server (vd "Chưa xác minh").
 # Để None nếu không cần bước này (không tự gán role khi vào, không tự xóa role gì khi xác minh).
-UNVERIFIED_ROLE_ID = None  # <-- đổi thành ID role "Chưa xác minh", hoặc để None nếu không dùng
+UNVERIFIED_ROLE_ID = 1548621841495752785  # <-- đổi thành ID role "Chưa xác minh", hoặc để None nếu không dùng
 
 DATA_FILE = "ticket_data.json"  # lưu key hiện tại + lịch sử tạo ticket của user
 
