@@ -54,7 +54,7 @@ GAME_LIST = [
     "Steam - How to Fish",
     "Steam - ARK Survival",
     "Steam - GTA V",
-    "Steam - NARAKA",
+    "Steam - Red Dead 2",
 ]
 
 # ID kênh sẽ đăng đánh giá THẬT của khách sau khi họ tự bấm sao (để None nếu chưa dùng tính năng này)
