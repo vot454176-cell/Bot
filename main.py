@@ -58,7 +58,7 @@ GAME_LIST = [
 ]
 
 # ID kênh sẽ đăng đánh giá THẬT của khách sau khi họ tự bấm sao (để None nếu chưa dùng tính năng này)
-REVIEW_CHANNEL_ID = None  # <-- đổi thành ID kênh review của bạn
+REVIEW_CHANNEL_ID = 1548281883580694579  # <-- đổi thành ID kênh review của bạn
 
 DATA_FILE = "ticket_data.json"  # lưu key hiện tại + lịch sử tạo ticket của user
 
