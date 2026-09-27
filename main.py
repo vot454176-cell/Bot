@@ -51,7 +51,7 @@ UNVERIFIED_ROLE_ID = 1548621841495752785  # <-- đổi thành ID role "Chưa xá
 # Danh sách game cố định hiển thị trong menu thả xuống của /freeaccsteam.
 # Thêm/bớt/sửa tên tuỳ ý, tối đa 25 dòng (giới hạn của Discord select menu).
 GAME_LIST = [
-    "Steam - How to Fish ",
+    "Steam - How to Fish",
     "Steam - ARK Survival",
     "Steam - GTA V",
     "Steam - NARAKA",
