@@ -1,9 +1,10 @@
 """
 Bot Discord: /freeaccsteam + Xác minh thành viên
 --------------------------------------------------
-- User gõ lệnh /freeaccsteam -> bot tạo 1 KÊNH RIÊNG (chỉ user đó + admin thấy được)
-- Trong kênh, bot gửi ngay nội dung: "NHẬN ACCSTEAM MIỄN PHÍ" kèm Tài khoản + Mật khẩu
-- Tài khoản/Mật khẩu do CHỦ BOT tự đặt (dùng lệnh /setacc), bot không tự sinh
+- User gõ lệnh /freeaccsteam -> bot hỏi "cần tài khoản game gì" qua MENU THẢ XUỐNG (GAME_LIST)
+- Sau khi chọn game, bot tạo 1 KÊNH RIÊNG (chỉ user đó + admin thấy được)
+- Trong kênh, bot gửi ngay nội dung: "NHẬN ACCSTEAM MIỄN PHÍ" kèm Tài khoản + Mật khẩu của đúng game đã chọn
+- Tài khoản/Mật khẩu do CHỦ BOT tự đặt THEO TỪNG GAME (dùng lệnh /setacc), bot không tự sinh
 - Kênh ticket TỰ XÓA sau 5 phút kể từ lúc tạo
 - Mỗi user chỉ được tạo ticket 1 LẦN / 24H (lưu vào file để không mất khi restart bot)
 - /setupverify (admin) đăng bảng có nút "✅ Xác minh" -> user bấm vào sẽ được gán role,
@@ -47,6 +48,18 @@ VERIFY_ROLE_ID = 1548281835283292242    # <-- đổi thành ID role "Member đã
 # Để None nếu không cần bước này (không tự gán role khi vào, không tự xóa role gì khi xác minh).
 UNVERIFIED_ROLE_ID = 1548621841495752785  # <-- đổi thành ID role "Chưa xác minh", hoặc để None nếu không dùng
 
+# Danh sách game cố định hiển thị trong menu thả xuống của /freeaccsteam.
+# Thêm/bớt/sửa tên tuỳ ý, tối đa 25 dòng (giới hạn của Discord select menu).
+GAME_LIST = [
+    "Steam - CS2",
+    "Steam - PUBG",
+    "Steam - GTA V",
+    "Steam - Dota 2",
+]
+
+# ID kênh sẽ đăng đánh giá THẬT của khách sau khi họ tự bấm sao (để None nếu chưa dùng tính năng này)
+REVIEW_CHANNEL_ID = None  # <-- đổi thành ID kênh review của bạn
+
 DATA_FILE = "ticket_data.json"  # lưu key hiện tại + lịch sử tạo ticket của user
 
 # ====================== KHỞI TẠO ======================
@@ -60,8 +73,19 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"current_account": "CHƯA-CÓ-TÀI-KHOẢN", "current_password": "CHƯA-CÓ-MẬT-KHẨU", "last_ticket": {}}
+            loaded = json.load(f)
+            loaded.setdefault("accounts", {})  # {"Tên game": {"account": ..., "password": ...}}
+            return loaded
+    return {"accounts": {}, "last_ticket": {}}
+
+
+def get_account_for_game(game_name: str):
+    return data["accounts"].get(game_name)  # None nếu admin chưa /setacc cho game này
+
+
+# Lưu tạm các đơn đang chờ khách bấm đánh giá: {order_key: {"user_id": ..., "game": ...}}
+# Chỉ cần tồn tại trong bộ nhớ vì vòng đời ticket rất ngắn (AUTO_DELETE_SECONDS).
+pending_reviews = {}
 
 
 def save_data(data):
@@ -169,19 +193,24 @@ async def setupverify(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Đã đăng bảng xác minh.", ephemeral=True)
 
 
-# ---------- Lệnh admin: đổi tài khoản/mật khẩu hiện tại ----------
-@bot.tree.command(name="setacc", description="(Admin) Đặt tài khoản + mật khẩu sẽ gửi cho user")
-@app_commands.describe(account="Tài khoản muốn gửi cho user", password="Mật khẩu muốn gửi cho user")
+# ---------- Lệnh admin: đổi tài khoản/mật khẩu cho 1 game cụ thể ----------
+@app_commands.choices(
+    game=[app_commands.Choice(name=g, value=g) for g in GAME_LIST]
+)
+@bot.tree.command(name="setacc", description="(Admin) Đặt tài khoản + mật khẩu sẽ gửi cho user theo từng game")
+@app_commands.describe(
+    game="Game muốn cập nhật tài khoản", account="Tài khoản muốn gửi cho user", password="Mật khẩu muốn gửi cho user"
+)
 @app_commands.default_permissions(administrator=True)
-async def setacc(interaction: discord.Interaction, account: str, password: str):
+async def setacc(interaction: discord.Interaction, game: app_commands.Choice[str], account: str, password: str):
     if not is_admin(interaction):
         await interaction.response.send_message("❌ Bạn không có quyền dùng lệnh này.", ephemeral=True)
         return
-    data["current_account"] = account
-    data["current_password"] = password
+    data["accounts"][game.value] = {"account": account, "password": password}
     save_data(data)
     await interaction.response.send_message(
-        f"✅ Đã cập nhật:\nTài khoản: `{account}`\nMật khẩu: `{password}`", ephemeral=True
+        f"✅ Đã cập nhật tài khoản cho **{game.value}**:\nTài khoản: `{account}`\nMật khẩu: `{password}`",
+        ephemeral=True,
     )
 
 
@@ -209,6 +238,106 @@ async def resetfreeaccsteam(interaction: discord.Interaction, user: discord.Memb
         )
 
 
+# ---------- Popup xin nhận xét sau khi khách đã chọn số sao ----------
+class ReviewCommentModal(discord.ui.Modal, title="Cảm ơn bạn đã đánh giá!"):
+    comment = discord.ui.TextInput(
+        label="Nhận xét của bạn (có thể để trống)",
+        placeholder="Ví dụ: Nhận acc nhanh, chạy tốt!",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=300,
+    )
+
+    def __init__(self, order_key: str, stars: int, rating_view: "RatingView"):
+        super().__init__()
+        self.order_key = order_key
+        self.stars = stars
+        self.rating_view = rating_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        pending = pending_reviews.pop(self.order_key, None)
+        if pending is None:
+            await interaction.response.send_message("Đơn này đã được đánh giá rồi.", ephemeral=True)
+            return
+
+        if REVIEW_CHANNEL_ID:
+            review_channel = interaction.guild.get_channel(REVIEW_CHANNEL_ID)
+            if review_channel:
+                comment_text = self.comment.value.strip() or "_Không có nhận xét_"
+                embed = discord.Embed(
+                    description=(
+                        f"**Product:** {pending['game']}\n"
+                        f"**Rate:** {self.stars}/5 {'⭐' * self.stars}\n"
+                        f"**Comment:** {comment_text}\n"
+                        f"**Buyer:** {interaction.user.mention}"
+                    ),
+                    color=discord.Color.gold(),
+                )
+                await review_channel.send(embed=embed)
+
+        # Khoá các nút sao trên tin nhắn gốc, không cho bấm lại
+        for child in self.rating_view.children:
+            child.disabled = True
+            if isinstance(child, discord.ui.Button) and child.custom_id == f"rate_{self.order_key}_{self.stars}":
+                child.style = discord.ButtonStyle.success
+        await interaction.response.edit_message(content="✅ Cảm ơn bạn đã đánh giá!", view=self.rating_view)
+
+
+# ---------- 5 nút sao để khách tự đánh giá thật ----------
+class RatingView(discord.ui.View):
+    def __init__(self, order_key: str, owner_id: int, game: str):
+        super().__init__(timeout=None)
+        self.order_key = order_key
+        self.owner_id = owner_id
+        for n in range(1, 6):
+            self.add_item(self._make_button(n))
+
+    def _make_button(self, n: int):
+        button = discord.ui.Button(
+            label="⭐" * n, style=discord.ButtonStyle.secondary, custom_id=f"rate_{self.order_key}_{n}"
+        )
+
+        async def callback(interaction: discord.Interaction, stars=n):
+            if interaction.user.id != self.owner_id:
+                await interaction.response.send_message("Chỉ khách hàng của đơn này mới đánh giá được.", ephemeral=True)
+                return
+            if self.order_key not in pending_reviews:
+                await interaction.response.send_message("Đơn này đã được đánh giá rồi.", ephemeral=True)
+                return
+            await interaction.response.send_modal(ReviewCommentModal(self.order_key, stars, self))
+
+        button.callback = callback
+        return button
+
+
+# ---------- Dropdown chọn game trước khi tạo ticket ----------
+class GameSelect(discord.ui.Select):
+    def __init__(self):
+        options = [discord.SelectOption(label=g, value=g) for g in GAME_LIST]
+        super().__init__(placeholder="Chọn game bạn cần tài khoản...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        chosen_game = self.values[0]
+        account_info = get_account_for_game(chosen_game)
+        if account_info is None:
+            await interaction.response.send_message(
+                f"⚠️ Hiện chưa có tài khoản nào được cấu hình cho **{chosen_game}**. Báo admin dùng `/setacc` để thêm.",
+                ephemeral=True,
+            )
+            return
+        # Chặn double-submit nếu user bấm chọn 2 lần liên tiếp
+        for item in self.view.children:
+            item.disabled = True
+        await interaction.response.edit_message(content=f"✅ Đang tạo ticket cho **{chosen_game}**...", view=self.view)
+        await create_freeacc_ticket(interaction, chosen_game, account_info)
+
+
+class GameSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+        self.add_item(GameSelect())
+
+
 # ---------- Lệnh chính: tạo ticket nhận key ----------
 @bot.tree.command(name="freeaccsteam", description="Tạo ticket riêng để nhận key miễn phí")
 async def freeaccsteam(interaction: discord.Interaction):
@@ -233,7 +362,14 @@ async def freeaccsteam(interaction: discord.Interaction):
             )
             return
 
-    await interaction.response.send_message("✅ Đang tạo ticket riêng cho bạn...", ephemeral=True)
+    await interaction.response.send_message(
+        "Bạn cần tài khoản của game nào? Chọn ở menu bên dưới:", view=GameSelectView(), ephemeral=True
+    )
+
+
+async def create_freeacc_ticket(interaction: discord.Interaction, game_name: str, account_info: dict):
+    guild = interaction.guild
+    user = interaction.user
 
     # Quyền: chỉ user này + admin role thấy được kênh
     everyone_role = guild.default_role
@@ -304,8 +440,9 @@ async def freeaccsteam(interaction: discord.Interaction):
         description=(
             f"Chào mừng {user.mention} Bạn đang thực hiện nhận Acc miễn phí.\n\n"
             f"📌 **Thông tin:**\n"
-            f"• **Tài khoản:** `{data['current_account']}`\n"
-            f"• **Mật khẩu:** `{data['current_password']}`\n"
+            f"• **Game:** `{game_name}`\n"
+            f"• **Tài khoản:** `{account_info['account']}`\n"
+            f"• **Mật khẩu:** `{account_info['password']}`\n"
             f"• **Giới hạn:** 1 lượt / 24h\n\n"
             f"⚠️ Kênh này sẽ tự xóa sau **5 phút**."
         ),
@@ -313,9 +450,19 @@ async def freeaccsteam(interaction: discord.Interaction):
     )
     await ticket_channel.send(embed=info_embed)
 
+    # Mời khách tự bấm sao đánh giá thật (chỉ đúng người nhận acc mới bấm được)
+    order_key = f"{user.id}_{int(datetime.datetime.utcnow().timestamp())}"
+    pending_reviews[order_key] = {"user_id": user.id, "game": game_name}
+    rating_view = RatingView(order_key, user.id, game_name)
+    await ticket_channel.send(
+        content=f"{user.mention} Bạn đánh giá lượt nhận acc này bao nhiêu sao?",
+        view=rating_view,
+    )
+
     # Lên lịch tự xóa kênh sau 5 phút
     async def auto_delete():
         await asyncio.sleep(AUTO_DELETE_SECONDS)
+        pending_reviews.pop(order_key, None)  # hết hạn thì thôi, không ép khách đánh giá
         try:
             await ticket_channel.delete(reason="Tự động xóa ticket sau 5 phút")
         except discord.NotFound:
