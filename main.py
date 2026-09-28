@@ -45,6 +45,7 @@ GAME_LIST = [
     "Steam - GTA V",
     "Steam - Red Dead 2",
     "Steam - Subnautica Below Zero",
+    "Steam - Euro Truck Simulator 2",
 ]
 
 # Kênh đăng đánh giá thật của khách (None nếu chưa dùng)
