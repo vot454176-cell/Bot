@@ -40,7 +40,6 @@ VERIFY_ROLE_ID = 1548281835283292242
 UNVERIFIED_ROLE_ID = 1548621841495752785
 
 GAME_LIST = [
-    "Steam - How to Fish",
     "Steam - ARK Survival",
     "Steam - GTA V",
     "Steam - Red Dead 2",
