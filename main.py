@@ -1,23 +1,16 @@
 """
-Bot Discord: /freeaccsteam + Xác minh thành viên
---------------------------------------------------
-- User gõ lệnh /freeaccsteam -> bot hỏi "cần tài khoản game gì" qua MENU THẢ XUỐNG (GAME_LIST)
-- Sau khi chọn game, bot tạo 1 KÊNH RIÊNG (chỉ user đó + admin thấy được)
-- Trong kênh, bot gửi ngay nội dung: "NHẬN ACCSTEAM MIỄN PHÍ" kèm Tài khoản + Mật khẩu của đúng game đã chọn
-- Tài khoản/Mật khẩu do CHỦ BOT tự đặt THEO TỪNG GAME (dùng lệnh /setacc), bot không tự sinh
-- Kênh ticket TỰ XÓA sau 5 phút kể từ lúc tạo
-- Mỗi user chỉ được tạo ticket 1 LẦN / 24H (lưu vào file để không mất khi restart bot)
-- /setupverify (admin) đăng bảng có nút "✅ Xác minh" -> user bấm vào sẽ được gán role,
-  đồng thời TỰ ĐỘNG XÓA role "chưa xác minh" cũ (nếu có cấu hình UNVERIFIED_ROLE_ID),
-  mở khóa các kênh chat khác (phần ẩn kênh với @everyone cần tự cấu hình trong Server Settings)
+Bot Discord: /freeaccsteam + Xác minh thành viên + THỐNG KÊ SERVER
+-------------------------------------------------------------------
+- /freeaccsteam  -> chọn game bằng menu thả xuống -> bot tạo kênh riêng gửi Tài khoản + Mật khẩu
+- /setacc        -> (admin) đặt tài khoản/mật khẩu theo từng game
+- Kênh ticket tự xóa sau 5 phút, mỗi user 1 lần / 24h (lưu file, không mất khi restart)
+- /setupverify   -> (admin) đăng bảng nút "✅ Xác minh"
+- /setupstats    -> (admin) TỰ TẠO mục "📊 THỐNG KÊ SERVER" gồm các kênh voice bị khóa:
+                       ╔ Tổng thành viên / ╠ Bots / ╠ Đã xác minh / ╠ Acc đã phát / ╚ Ticket đang mở
+                    Bot tự cập nhật số liệu mỗi 5 phút. Chạy lại /setupstats để tạo lại nếu lỡ xóa.
 
-Cài đặt:
-    pip install -U discord.py
-
-Chạy:
-    python bot.py
-
-Trước khi chạy, xem phần CẤU HÌNH bên dưới để điền TOKEN, ROLE ADMIN, ảnh, v.v.
+Cài đặt:  pip install -U discord.py
+Chạy:     python bot.py
 """
 
 import os
@@ -27,29 +20,25 @@ import datetime
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 # ====================== CẤU HÌNH ======================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 
-# ID admin: có thể điền ID CỦA USER (tài khoản Discord) hoặc ID CỦA ROLE, bot tự nhận diện được cả 2.
-# Muốn thêm nhiều admin thì thêm nhiều ID vào trong dấu {}, cách nhau bằng dấu phẩy.
+# ID admin: điền ID USER hoặc ID ROLE, bot tự nhận diện cả 2.
 ADMIN_IDS = {1548281829432365056, 987654321098765432}
 
-# ID category để chứa các kênh ticket (để trống None nếu không cần category riêng)
-TICKET_CATEGORY_ID = None  # vd: 123456789012345678
+# ID category chứa các kênh ticket (None nếu không cần)
+TICKET_CATEGORY_ID = None
 
 AUTO_DELETE_SECONDS = 5 * 60  # 5 phút
 
-# ID role sẽ được gán cho user sau khi bấm nút xác minh (chuột phải role -> Copy ID)
-VERIFY_ROLE_ID = 1548281835283292242    # <-- đổi thành ID role "Member đã xác minh" của bạn
+# Role gán sau khi bấm xác minh
+VERIFY_ROLE_ID = 1548281835283292242
 
-# ID role tự động gán cho user MỚI VÀO server (vd "Chưa xác minh").
-# Để None nếu không cần bước này (không tự gán role khi vào, không tự xóa role gì khi xác minh).
-UNVERIFIED_ROLE_ID = 1548621841495752785  # <-- đổi thành ID role "Chưa xác minh", hoặc để None nếu không dùng
+# Role tự gán cho người MỚI VÀO (None nếu không dùng)
+UNVERIFIED_ROLE_ID = 1548621841495752785
 
-# Danh sách game cố định hiển thị trong menu thả xuống của /freeaccsteam.
-# Thêm/bớt/sửa tên tuỳ ý, tối đa 25 dòng (giới hạn của Discord select menu).
 GAME_LIST = [
     "Steam - How to Fish",
     "Steam - ARK Survival",
@@ -58,10 +47,22 @@ GAME_LIST = [
     "Steam - Subnautica Below Zero",
 ]
 
-# ID kênh sẽ đăng đánh giá THẬT của khách sau khi họ tự bấm sao (để None nếu chưa dùng tính năng này)
-REVIEW_CHANNEL_ID = 1548281883580694579  # <-- đổi thành ID kênh review của bạn
+# Kênh đăng đánh giá thật của khách (None nếu chưa dùng)
+REVIEW_CHANNEL_ID = 1548281883580694579
 
-DATA_FILE = "ticket_data.json"  # lưu key hiện tại + lịch sử tạo ticket của user
+# ---- THỐNG KÊ SERVER ----
+STATS_CATEGORY_NAME = "📊 THỐNG KÊ SERVER"
+# (khóa, mẫu tên kênh) - {} sẽ được thay bằng số. Muốn thêm/bớt dòng thì sửa ở đây.
+STATS_DEFINITIONS = [
+    ("total_members", "╔ Tổng thành viên: {}"),
+    ("bots",          "╠ Bots: {}"),
+    ("verified",      "╠ Đã xác minh: {}"),
+    ("given",         "╠ Acc đã phát: {}"),
+    ("active",        "╚ Ticket đang mở: {}"),
+]
+STATS_UPDATE_MINUTES = 5  # Discord giới hạn đổi tên kênh ~2 lần/10 phút, đừng để nhỏ hơn 5
+
+DATA_FILE = "ticket_data.json"
 
 # ====================== KHỞI TẠO ======================
 intents = discord.Intents.default()
@@ -75,26 +76,28 @@ def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             loaded = json.load(f)
-            loaded.setdefault("accounts", {})  # {"Tên game": {"account": ..., "password": ...}}
-            return loaded
-    return {"accounts": {}, "last_ticket": {}}
+    else:
+        loaded = {}
+    loaded.setdefault("accounts", {})
+    loaded.setdefault("last_ticket", {})
+    loaded.setdefault("total_given", 0)
+    loaded.setdefault("stats", {"guild_id": None, "channels": {}})
+    return loaded
 
 
-def get_account_for_game(game_name: str):
-    return data["accounts"].get(game_name)  # None nếu admin chưa /setacc cho game này
-
-
-# Lưu tạm các đơn đang chờ khách bấm đánh giá: {order_key: {"user_id": ..., "game": ...}}
-# Chỉ cần tồn tại trong bộ nhớ vì vòng đời ticket rất ngắn (AUTO_DELETE_SECONDS).
-pending_reviews = {}
-
-
-def save_data(data):
+def save_data(d):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(d, f, ensure_ascii=False, indent=2)
 
 
 data = load_data()
+
+pending_reviews = {}   # {order_key: {"user_id":..., "game":...}}
+active_tickets = 0     # số ticket đang mở (đếm trong bộ nhớ)
+
+
+def get_account_for_game(game_name: str):
+    return data["accounts"].get(game_name)
 
 
 def get_last_ticket_time(user_id: int):
@@ -114,9 +117,114 @@ def is_admin(interaction: discord.Interaction) -> bool:
     return any(r.id in ADMIN_IDS for r in interaction.user.roles)
 
 
+def fmt_num(n: int) -> str:
+    return f"{n:,}".replace(",", ".")  # 2494 -> 2.494
+
+
+# ====================== THỐNG KÊ SERVER ======================
+def compute_stats(guild: discord.Guild) -> dict:
+    verify_role = guild.get_role(VERIFY_ROLE_ID)
+    return {
+        "total_members": guild.member_count or len(guild.members),
+        "bots": sum(1 for m in guild.members if m.bot),
+        "verified": len(verify_role.members) if verify_role else 0,
+        "given": data["total_given"],
+        "active": active_tickets,
+    }
+
+
+def stats_name(key: str, value: int) -> str:
+    template = dict(STATS_DEFINITIONS)[key]
+    return template.format(fmt_num(value))
+
+
+@tasks.loop(minutes=STATS_UPDATE_MINUTES)
+async def update_stats():
+    info = data.get("stats", {})
+    guild = bot.get_guild(info.get("guild_id")) if info.get("guild_id") else None
+    if guild is None:
+        return
+    values = compute_stats(guild)
+    for key, channel_id in info.get("channels", {}).items():
+        channel = guild.get_channel(channel_id)
+        if channel is None or key not in values:
+            continue
+        new_name = stats_name(key, values[key])
+        if channel.name != new_name:
+            try:
+                await channel.edit(name=new_name, reason="Cập nhật thống kê server")
+            except discord.HTTPException as e:
+                print(f"⚠️ Không đổi được tên kênh thống kê '{key}': {e}")
+
+
+@bot.tree.command(name="setupstats", description="(Admin) Tự tạo mục THỐNG KÊ SERVER (các kênh voice khóa)")
+@app_commands.default_permissions(administrator=True)
+async def setupstats(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Bạn không có quyền dùng lệnh này.", ephemeral=True)
+        return
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    # Xóa kênh thống kê cũ (nếu có) để tạo lại sạch sẽ
+    old = data.get("stats", {})
+    for channel_id in old.get("channels", {}).values():
+        ch = guild.get_channel(channel_id)
+        if ch:
+            try:
+                await ch.delete(reason="Tạo lại kênh thống kê")
+            except discord.HTTPException:
+                pass
+
+    # Mọi người thấy nhưng KHÔNG vào (Connect) được -> có icon ổ khóa như ảnh mẫu
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=True, connect=False),
+    }
+    bot_member = guild.me
+    if bot_member:
+        overwrites[bot_member] = discord.PermissionOverwrite(
+            view_channel=True, connect=True, manage_channels=True
+        )
+
+    try:
+        category = discord.utils.get(guild.categories, name=STATS_CATEGORY_NAME)
+        if category is None:
+            category = await guild.create_category(STATS_CATEGORY_NAME, overwrites=overwrites, position=0)
+        else:
+            await category.edit(overwrites=overwrites)
+
+        values = compute_stats(guild)
+        channels = {}
+        for key, _template in STATS_DEFINITIONS:
+            ch = await guild.create_voice_channel(
+                name=stats_name(key, values[key]),
+                category=category,
+                overwrites=overwrites,
+                reason="Tạo kênh thống kê server",
+            )
+            channels[key] = ch.id
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "❌ Bot thiếu quyền **Manage Channels**. Cấp quyền cho role của bot rồi chạy lại /setupstats.",
+            ephemeral=True,
+        )
+        return
+
+    data["stats"] = {"guild_id": guild.id, "channels": channels}
+    save_data(data)
+    await interaction.followup.send(
+        f"✅ Đã tạo mục **{STATS_CATEGORY_NAME}** với {len(channels)} kênh. Số liệu tự cập nhật mỗi {STATS_UPDATE_MINUTES} phút.",
+        ephemeral=True,
+    )
+
+
+# ====================== SỰ KIỆN ======================
 @bot.event
 async def on_member_join(member: discord.Member):
-    """Tự động gán role 'Chưa xác minh' cho user mới vào server (nếu có cấu hình)."""
     if UNVERIFIED_ROLE_ID is None:
         return
     role = member.guild.get_role(UNVERIFIED_ROLE_ID)
@@ -124,13 +232,12 @@ async def on_member_join(member: discord.Member):
         try:
             await member.add_roles(role, reason="Tự động gán role chưa xác minh khi mới vào server")
         except discord.Forbidden:
-            print("⚠️ Bot không có quyền gán UNVERIFIED_ROLE_ID cho thành viên mới. Kiểm tra vị trí role bot.")
+            print("⚠️ Bot không có quyền gán UNVERIFIED_ROLE_ID. Kiểm tra vị trí role của bot.")
 
 
-# ---------- Nút bấm xác minh ----------
 class VerifyView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=None)  # timeout=None để nút không bao giờ hết hạn, kể cả khi bot restart
+        super().__init__(timeout=None)
 
     @discord.ui.button(label="✅ Xác minh", style=discord.ButtonStyle.success, custom_id="verify_button")
     async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -150,14 +257,12 @@ class VerifyView(discord.ui.View):
 
         try:
             await interaction.user.add_roles(role, reason="Tự xác minh qua nút bấm")
-
-            # Nếu có cấu hình role "chưa xác minh", xóa role đó đi sau khi xác minh xong
-            if UNVERIFY_ROLE := (guild.get_role(UNVERIFIED_ROLE_ID) if UNVERIFIED_ROLE_ID else None):
-                if UNVERIFY_ROLE in interaction.user.roles:
-                    await interaction.user.remove_roles(UNVERIFY_ROLE, reason="Đã xác minh xong")
+            unverified = guild.get_role(UNVERIFIED_ROLE_ID) if UNVERIFIED_ROLE_ID else None
+            if unverified and unverified in interaction.user.roles:
+                await interaction.user.remove_roles(unverified, reason="Đã xác minh xong")
         except discord.Forbidden:
             await interaction.response.send_message(
-                "❌ Bot không có quyền gán/xóa role này. Báo admin kiểm tra: role bot phải nằm CAO HƠN role xác minh và role chưa-xác-minh trong danh sách Roles.",
+                "❌ Bot không có quyền gán/xóa role này. Role của bot phải nằm CAO HƠN role xác minh và role chưa-xác-minh.",
                 ephemeral=True,
             )
             return
@@ -169,12 +274,14 @@ class VerifyView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    bot.add_view(VerifyView())  # đăng ký lại nút để nó vẫn hoạt động sau khi bot restart
+    bot.add_view(VerifyView())
     await bot.tree.sync()
+    if not update_stats.is_running():
+        update_stats.start()
     print(f"✅ Bot đã đăng nhập với tên: {bot.user}")
 
 
-# ---------- Lệnh admin: đăng bảng xác minh vào kênh hiện tại ----------
+# ====================== LỆNH ADMIN ======================
 @bot.tree.command(name="setupverify", description="(Admin) Đăng bảng xác minh có nút bấm vào kênh này")
 @app_commands.default_permissions(administrator=True)
 async def setupverify(interaction: discord.Interaction):
@@ -194,10 +301,7 @@ async def setupverify(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Đã đăng bảng xác minh.", ephemeral=True)
 
 
-# ---------- Lệnh admin: đổi tài khoản/mật khẩu cho 1 game cụ thể ----------
-@app_commands.choices(
-    game=[app_commands.Choice(name=g, value=g) for g in GAME_LIST]
-)
+@app_commands.choices(game=[app_commands.Choice(name=g, value=g) for g in GAME_LIST])
 @bot.tree.command(name="setacc", description="(Admin) Đặt tài khoản + mật khẩu sẽ gửi cho user theo từng game")
 @app_commands.describe(
     game="Game muốn cập nhật tài khoản", account="Tài khoản muốn gửi cho user", password="Mật khẩu muốn gửi cho user"
@@ -215,7 +319,6 @@ async def setacc(interaction: discord.Interaction, game: app_commands.Choice[str
     )
 
 
-# ---------- Lệnh admin: reset giới hạn 24h cho 1 user ----------
 @bot.tree.command(name="resetfreeaccsteam", description="(Admin) Reset lại giới hạn 24h của 1 user cho lệnh /freeaccsteam")
 @app_commands.describe(user="User cần reset giới hạn")
 @app_commands.default_permissions(administrator=True)
@@ -239,7 +342,7 @@ async def resetfreeaccsteam(interaction: discord.Interaction, user: discord.Memb
         )
 
 
-# ---------- Popup xin nhận xét sau khi khách đã chọn số sao ----------
+# ====================== ĐÁNH GIÁ ======================
 class ReviewCommentModal(discord.ui.Modal, title="Cảm ơn bạn đã đánh giá!"):
     comment = discord.ui.TextInput(
         label="Nhận xét của bạn (có thể để trống)",
@@ -276,7 +379,6 @@ class ReviewCommentModal(discord.ui.Modal, title="Cảm ơn bạn đã đánh gi
                 )
                 await review_channel.send(embed=embed)
 
-        # Khoá các nút sao trên tin nhắn gốc, không cho bấm lại
         for child in self.rating_view.children:
             child.disabled = True
             if isinstance(child, discord.ui.Button) and child.custom_id == f"rate_{self.order_key}_{self.stars}":
@@ -284,7 +386,6 @@ class ReviewCommentModal(discord.ui.Modal, title="Cảm ơn bạn đã đánh gi
         await interaction.response.edit_message(content="✅ Cảm ơn bạn đã đánh giá!", view=self.rating_view)
 
 
-# ---------- 5 nút sao để khách tự đánh giá thật ----------
 class RatingView(discord.ui.View):
     def __init__(self, order_key: str, owner_id: int, game: str):
         super().__init__(timeout=None)
@@ -311,7 +412,7 @@ class RatingView(discord.ui.View):
         return button
 
 
-# ---------- Dropdown chọn game trước khi tạo ticket ----------
+# ====================== /freeaccsteam ======================
 class GameSelect(discord.ui.Select):
     def __init__(self):
         options = [discord.SelectOption(label=g, value=g) for g in GAME_LIST]
@@ -326,7 +427,6 @@ class GameSelect(discord.ui.Select):
                 ephemeral=True,
             )
             return
-        # Chặn double-submit nếu user bấm chọn 2 lần liên tiếp
         for item in self.view.children:
             item.disabled = True
         await interaction.response.edit_message(content=f"✅ Đang tạo ticket cho **{chosen_game}**...", view=self.view)
@@ -339,8 +439,7 @@ class GameSelectView(discord.ui.View):
         self.add_item(GameSelect())
 
 
-# ---------- Lệnh chính: tạo ticket nhận key ----------
-@bot.tree.command(name="freeaccsteam", description="Tạo ticket riêng để nhận key miễn phí")
+@bot.tree.command(name="freeaccsteam", description="Tạo ticket riêng để nhận acc Steam miễn phí")
 async def freeaccsteam(interaction: discord.Interaction):
     guild = interaction.guild
     user = interaction.user
@@ -349,7 +448,6 @@ async def freeaccsteam(interaction: discord.Interaction):
         await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
         return
 
-    # Kiểm tra giới hạn 1 lần / 24 giờ
     last_time = get_last_ticket_time(user.id)
     if last_time is not None:
         elapsed = datetime.datetime.utcnow() - last_time
@@ -369,18 +467,11 @@ async def freeaccsteam(interaction: discord.Interaction):
 
 
 async def create_freeacc_ticket(interaction: discord.Interaction, game_name: str, account_info: dict):
+    global active_tickets
     guild = interaction.guild
     user = interaction.user
 
-    # Quyền: chỉ user này + admin role thấy được kênh
     everyone_role = guild.default_role
-    if everyone_role is None:
-        try:
-            roles = await guild.fetch_roles()
-            everyone_role = discord.utils.get(roles, id=guild.id)
-        except discord.HTTPException:
-            everyone_role = None
-
     overwrites = {}
     if everyone_role:
         overwrites[everyone_role] = discord.PermissionOverwrite(view_channel=False)
@@ -389,11 +480,6 @@ async def create_freeacc_ticket(interaction: discord.Interaction, game_name: str
     )
 
     bot_member = guild.me or guild.get_member(bot.user.id)
-    if bot_member is None:
-        try:
-            bot_member = await guild.fetch_member(bot.user.id)
-        except discord.HTTPException:
-            bot_member = None
     if bot_member:
         overwrites[bot_member] = discord.PermissionOverwrite(
             view_channel=True, send_messages=True, manage_channels=True
@@ -408,11 +494,7 @@ async def create_freeacc_ticket(interaction: discord.Interaction, game_name: str
         if admin_member:
             overwrites[admin_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
-    # An toàn: loại bỏ bất kỳ key nào lỡ bị None để không bao giờ crash ở bước tạo kênh
-    removed_none = any(k is None for k in overwrites.keys())
     overwrites = {k: v for k, v in overwrites.items() if k is not None}
-    if removed_none:
-        print("⚠️ Cảnh báo: có 1 quyền (overwrite) bị None và đã được bỏ qua khi tạo kênh ticket.")
 
     category = guild.get_channel(TICKET_CATEGORY_ID) if TICKET_CATEGORY_ID else None
 
@@ -426,16 +508,17 @@ async def create_freeacc_ticket(interaction: discord.Interaction, game_name: str
         )
     except discord.Forbidden:
         await interaction.followup.send(
-            "❌ Bot không có quyền tạo kênh. Vào server, cấp thêm quyền **Manage Channels** cho role của bot rồi thử lại.",
+            "❌ Bot không có quyền tạo kênh. Cấp thêm quyền **Manage Channels** cho role của bot rồi thử lại.",
             ephemeral=True,
         )
         return
 
-    # Đánh dấu user đã tạo ticket NGAY khi tạo kênh (chống spam bấm nhiều lần)
+    # Đánh dấu lượt + tăng bộ đếm thống kê
     set_last_ticket_time_now(user.id)
+    data["total_given"] += 1
     save_data(data)
+    active_tickets += 1
 
-    # Gửi nội dung nhận acc
     info_embed = discord.Embed(
         title="🎁 NHẬN ACCSTEAM MIỄN PHÍ",
         description=(
@@ -451,7 +534,6 @@ async def create_freeacc_ticket(interaction: discord.Interaction, game_name: str
     )
     await ticket_channel.send(embed=info_embed)
 
-    # Mời khách tự bấm sao đánh giá thật (chỉ đúng người nhận acc mới bấm được)
     order_key = f"{user.id}_{int(datetime.datetime.utcnow().timestamp())}"
     pending_reviews[order_key] = {"user_id": user.id, "game": game_name}
     rating_view = RatingView(order_key, user.id, game_name)
@@ -460,20 +542,22 @@ async def create_freeacc_ticket(interaction: discord.Interaction, game_name: str
         view=rating_view,
     )
 
-    # Lên lịch tự xóa kênh sau 5 phút
     async def auto_delete():
+        global active_tickets
         await asyncio.sleep(AUTO_DELETE_SECONDS)
-        pending_reviews.pop(order_key, None)  # hết hạn thì thôi, không ép khách đánh giá
+        pending_reviews.pop(order_key, None)
         try:
             await ticket_channel.delete(reason="Tự động xóa ticket sau 5 phút")
         except discord.NotFound:
             pass
+        finally:
+            active_tickets = max(0, active_tickets - 1)
 
     bot.loop.create_task(auto_delete())
 
 
 if __name__ == "__main__":
-    if DISCORD_TOKEN == "DÁN_TOKEN_CỦA_BẠN_VÀO_ĐÂY":
-        print("⚠️  Bạn chưa điền TOKEN. Mở file bot.py và dán token vào biến DISCORD_TOKEN.")
+    if not DISCORD_TOKEN:
+        print("⚠️  Bạn chưa điền TOKEN. Đặt biến môi trường DISCORD_TOKEN (hoặc dán token vào DISCORD_TOKEN trong bot.py).")
     else:
         bot.run(DISCORD_TOKEN)
