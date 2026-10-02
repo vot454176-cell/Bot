@@ -44,7 +44,9 @@ GAME_LIST = [
     "Steam - Red Dead 2",
     "Steam - Subnautica Below Zero",
     "Steam - Euro Truck Simulator 2",
-    "Steam - Raft Và Game Khác",
+    "Steam - Raft",
+    "Steam - Rust",
+    "Steam - Project Zomboid",
 ]
 
 # Kênh đăng đánh giá thật của khách (None nếu chưa dùng)
