@@ -1,13 +1,10 @@
 """
-Bot Discord: /freeaccsteam + Xác minh thành viên + THỐNG KÊ SERVER
--------------------------------------------------------------------
+Bot Discord: /freeaccsteam + Xác minh thành viên
+-------------------------------------------------
 - /freeaccsteam  -> chọn game bằng menu thả xuống -> bot tạo kênh riêng gửi Tài khoản + Mật khẩu
-- /setacc        -> (admin) đặt tài khoản/mật khẩu theo từng game
+- /setacc        -> (admin) đặt tài khoản/mật khẩu theo từng game (LƯU VĨNH VIỄN vào file)
 - Kênh ticket tự xóa sau 5 phút, mỗi user 1 lần / 24h (lưu file, không mất khi restart)
 - /setupverify   -> (admin) đăng bảng nút "✅ Xác minh"
-- /setupstats    -> (admin) TỰ TẠO mục "📊 THỐNG KÊ SERVER" gồm các kênh voice bị khóa:
-                       ╔ Tổng thành viên / ╠ Bots / ╠ Đã xác minh / ╠ Acc đã phát / ╚ Ticket đang mở
-                    Bot tự cập nhật số liệu mỗi 5 phút. Chạy lại /setupstats để tạo lại nếu lỡ xóa.
 
 Cài đặt:  pip install -U discord.py
 Chạy:     python bot.py
@@ -20,7 +17,7 @@ import datetime
 
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 # ====================== CẤU HÌNH ======================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
@@ -54,19 +51,20 @@ GAME_LIST = [
 # Kênh đăng đánh giá thật của khách (None nếu chưa dùng)
 REVIEW_CHANNEL_ID = 1548281883580694579
 
-# ---- THỐNG KÊ SERVER ----
-STATS_CATEGORY_NAME = "📊 THỐNG KÊ SERVER"
-# (khóa, mẫu tên kênh) - {} sẽ được thay bằng số. Muốn thêm/bớt dòng thì sửa ở đây.
-STATS_DEFINITIONS = [
-    ("total_members", "╔ Tổng thành viên: {}"),
-    ("bots",          "╠ Bots: {}"),
-    ("verified",      "╠ Đã xác minh: {}"),
-    ("given",         "╠ Acc đã phát: {}"),
-    ("active",        "╚ Ticket đang mở: {}"),
-]
-STATS_UPDATE_MINUTES = 5  # Discord giới hạn đổi tên kênh ~2 lần/10 phút, đừng để nhỏ hơn 5
+# ---- LƯU DỮ LIỆU (FIX LỖI MẤT ACC KHI RESET) ----
+# File được lưu CẠNH bot.py (không phụ thuộc thư mục đang chạy).
+# Nếu host của bạn có ổ đĩa vĩnh viễn (vd Railway Volume mount ở /data),
+# hãy đặt biến môi trường DATA_FILE=/data/ticket_data.json
+DATA_FILE = os.getenv(
+    "DATA_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "ticket_data.json"),
+)
 
-DATA_FILE = "ticket_data.json"
+# Acc mặc định NẰM TRONG CODE: dù host xóa file khi reset thì acc vẫn còn.
+# /setacc sẽ ghi đè lên acc mặc định này (lưu vào file).
+# Ví dụ: "Steam - GTA V": {"account": "user1", "password": "pass1"},
+DEFAULT_ACCOUNTS = {
+}
 
 # ====================== KHỞI TẠO ======================
 intents = discord.Intents.default()
@@ -77,27 +75,42 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 
 def load_data():
+    loaded = {}
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"⚠️ Không đọc được {DATA_FILE}: {e}")
+            loaded = {}
     else:
-        loaded = {}
+        print(f"ℹ️ Chưa có file dữ liệu, sẽ tạo mới tại: {DATA_FILE}")
     loaded.setdefault("accounts", {})
     loaded.setdefault("last_ticket", {})
     loaded.setdefault("total_given", 0)
-    loaded.setdefault("stats", {"guild_id": None, "channels": {}})
+    # Điền acc mặc định cho game nào chưa có (không đè acc đã /setacc)
+    for game, info in DEFAULT_ACCOUNTS.items():
+        loaded["accounts"].setdefault(game, info)
     return loaded
 
 
 def save_data(d):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
+    # Ghi ra file tạm rồi thay thế -> không bị hỏng file nếu bot tắt giữa chừng
+    tmp = DATA_FILE + ".tmp"
+    folder = os.path.dirname(DATA_FILE)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, DATA_FILE)
 
 
 data = load_data()
+print(f"📁 File dữ liệu: {DATA_FILE} | Số game đã có acc: {len(data['accounts'])}")
 
 pending_reviews = {}   # {order_key: {"user_id":..., "game":...}}
-active_tickets = 0     # số ticket đang mở (đếm trong bộ nhớ)
 
 
 def get_account_for_game(game_name: str):
@@ -119,111 +132,6 @@ def is_admin(interaction: discord.Interaction) -> bool:
     if interaction.user.id in ADMIN_IDS:
         return True
     return any(r.id in ADMIN_IDS for r in interaction.user.roles)
-
-
-def fmt_num(n: int) -> str:
-    return f"{n:,}".replace(",", ".")  # 2494 -> 2.494
-
-
-# ====================== THỐNG KÊ SERVER ======================
-def compute_stats(guild: discord.Guild) -> dict:
-    verify_role = guild.get_role(VERIFY_ROLE_ID)
-    return {
-        "total_members": guild.member_count or len(guild.members),
-        "bots": sum(1 for m in guild.members if m.bot),
-        "verified": len(verify_role.members) if verify_role else 0,
-        "given": data["total_given"],
-        "active": active_tickets,
-    }
-
-
-def stats_name(key: str, value: int) -> str:
-    template = dict(STATS_DEFINITIONS)[key]
-    return template.format(fmt_num(value))
-
-
-@tasks.loop(minutes=STATS_UPDATE_MINUTES)
-async def update_stats():
-    info = data.get("stats", {})
-    guild = bot.get_guild(info.get("guild_id")) if info.get("guild_id") else None
-    if guild is None:
-        return
-    values = compute_stats(guild)
-    for key, channel_id in info.get("channels", {}).items():
-        channel = guild.get_channel(channel_id)
-        if channel is None or key not in values:
-            continue
-        new_name = stats_name(key, values[key])
-        if channel.name != new_name:
-            try:
-                await channel.edit(name=new_name, reason="Cập nhật thống kê server")
-            except discord.HTTPException as e:
-                print(f"⚠️ Không đổi được tên kênh thống kê '{key}': {e}")
-
-
-@bot.tree.command(name="setupstats", description="(Admin) Tự tạo mục THỐNG KÊ SERVER (các kênh voice khóa)")
-@app_commands.default_permissions(administrator=True)
-async def setupstats(interaction: discord.Interaction):
-    if not is_admin(interaction):
-        await interaction.response.send_message("❌ Bạn không có quyền dùng lệnh này.", ephemeral=True)
-        return
-    guild = interaction.guild
-    if guild is None:
-        await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-
-    # Xóa kênh thống kê cũ (nếu có) để tạo lại sạch sẽ
-    old = data.get("stats", {})
-    for channel_id in old.get("channels", {}).values():
-        ch = guild.get_channel(channel_id)
-        if ch:
-            try:
-                await ch.delete(reason="Tạo lại kênh thống kê")
-            except discord.HTTPException:
-                pass
-
-    # Mọi người thấy nhưng KHÔNG vào (Connect) được -> có icon ổ khóa như ảnh mẫu
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=True, connect=False),
-    }
-    bot_member = guild.me
-    if bot_member:
-        overwrites[bot_member] = discord.PermissionOverwrite(
-            view_channel=True, connect=True, manage_channels=True
-        )
-
-    try:
-        category = discord.utils.get(guild.categories, name=STATS_CATEGORY_NAME)
-        if category is None:
-            category = await guild.create_category(STATS_CATEGORY_NAME, overwrites=overwrites, position=0)
-        else:
-            await category.edit(overwrites=overwrites)
-
-        values = compute_stats(guild)
-        channels = {}
-        for key, _template in STATS_DEFINITIONS:
-            ch = await guild.create_voice_channel(
-                name=stats_name(key, values[key]),
-                category=category,
-                overwrites=overwrites,
-                reason="Tạo kênh thống kê server",
-            )
-            channels[key] = ch.id
-    except discord.Forbidden:
-        await interaction.followup.send(
-            "❌ Bot thiếu quyền **Manage Channels**. Cấp quyền cho role của bot rồi chạy lại /setupstats.",
-            ephemeral=True,
-        )
-        return
-
-    data["stats"] = {"guild_id": guild.id, "channels": channels}
-    save_data(data)
-    await interaction.followup.send(
-        f"✅ Đã tạo mục **{STATS_CATEGORY_NAME}** với {len(channels)} kênh. Số liệu tự cập nhật mỗi {STATS_UPDATE_MINUTES} phút.",
-        ephemeral=True,
-    )
 
 
 # ====================== SỰ KIỆN ======================
@@ -280,8 +188,6 @@ class VerifyView(discord.ui.View):
 async def on_ready():
     bot.add_view(VerifyView())
     await bot.tree.sync()
-    if not update_stats.is_running():
-        update_stats.start()
     print(f"✅ Bot đã đăng nhập với tên: {bot.user}")
 
 
@@ -316,9 +222,17 @@ async def setacc(interaction: discord.Interaction, game: app_commands.Choice[str
         await interaction.response.send_message("❌ Bạn không có quyền dùng lệnh này.", ephemeral=True)
         return
     data["accounts"][game.value] = {"account": account, "password": password}
-    save_data(data)
+    try:
+        save_data(data)
+    except OSError as e:
+        await interaction.response.send_message(
+            f"⚠️ Đã đặt acc tạm thời nhưng KHÔNG lưu được vào file ({e}). Acc sẽ mất khi bot restart.",
+            ephemeral=True,
+        )
+        return
     await interaction.response.send_message(
-        f"✅ Đã cập nhật tài khoản cho **{game.value}**:\nTài khoản: `{account}`\nMật khẩu: `{password}`",
+        f"✅ Đã cập nhật tài khoản cho **{game.value}**:\nTài khoản: `{account}`\nMật khẩu: `{password}`\n"
+        f"💾 Đã lưu vào file, restart bot không bị mất.",
         ephemeral=True,
     )
 
@@ -471,7 +385,6 @@ async def freeaccsteam(interaction: discord.Interaction):
 
 
 async def create_freeacc_ticket(interaction: discord.Interaction, game_name: str, account_info: dict):
-    global active_tickets
     guild = interaction.guild
     user = interaction.user
 
@@ -517,11 +430,10 @@ async def create_freeacc_ticket(interaction: discord.Interaction, game_name: str
         )
         return
 
-    # Đánh dấu lượt + tăng bộ đếm thống kê
+    # Đánh dấu lượt nhận acc
     set_last_ticket_time_now(user.id)
     data["total_given"] += 1
     save_data(data)
-    active_tickets += 1
 
     info_embed = discord.Embed(
         title="🎁 NHẬN ACCSTEAM MIỄN PHÍ",
@@ -547,15 +459,12 @@ async def create_freeacc_ticket(interaction: discord.Interaction, game_name: str
     )
 
     async def auto_delete():
-        global active_tickets
         await asyncio.sleep(AUTO_DELETE_SECONDS)
         pending_reviews.pop(order_key, None)
         try:
             await ticket_channel.delete(reason="Tự động xóa ticket sau 5 phút")
         except discord.NotFound:
             pass
-        finally:
-            active_tickets = max(0, active_tickets - 1)
 
     bot.loop.create_task(auto_delete())
 
