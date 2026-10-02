@@ -47,6 +47,8 @@ GAME_LIST = [
     "Steam - Raft",
     "Steam - Rust",
     "Steam - Project Zomboid",
+    "Steam - Sekiro Shadows Die Twice",
+    "Steam - Elden Ring",
 ]
 
 # Kênh đăng đánh giá thật của khách (None nếu chưa dùng)
